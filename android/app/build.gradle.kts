@@ -15,6 +15,11 @@ android {
         targetSdk = 34
         versionCode = buildNo
         versionName = "0.1.$buildNo"
+        buildConfigField("String", "VIEWER_URL", "\"https://ekremdemir18-gif.github.io/evkamera/\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     // Sabit imza anahtarı: yeni sürümler eskisinin üzerine kurulabilsin diye

@@ -397,7 +397,18 @@ $('#goScan').onclick = startScan;
 $('#scanBack').onclick = () => { stopScan(); openList(); };
 
 /* ================= GENEL ================= */
-document.querySelectorAll('[data-home]').forEach(b => b.onclick = () => { stopCamera(); show('home'); });
+const inApp = !!window.EvApp; // Android uygulamasının içinde açıldıysa
+document.querySelectorAll('[data-home]').forEach(b => b.onclick = () => {
+  stopCamera();
+  if (inApp && !$('#viewList').hidden) { window.EvApp.home(); return; }
+  show('home');
+});
+// Uygulamanın geri tuşu: bir önceki ekrana dön; dönülecek yer yoksa false
+window.evBack = () => {
+  if (!$('#watch').hidden) { $('#watchBack').click(); return true; }
+  if (!$('#scan').hidden) { $('#scanBack').click(); return true; }
+  return false;
+};
 
 // Telefonun kendi kamera uygulamasıyla QR okutulursa: sayfa #watch=... ile açılır
 const hashId = parseId(location.hash);
@@ -405,6 +416,9 @@ if (hashId){
   saveCam(hashId);
   history.replaceState(null, '', location.pathname);
   watch(hashId);
+} else if (inApp || location.hash === '#izle') {
+  history.replaceState(null, '', location.pathname);
+  openList();
 } else if (store.get('role') === 'view' && cams().length) {
   openList();
 } else {

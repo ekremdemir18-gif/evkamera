@@ -28,7 +28,10 @@ import com.google.zxing.qrcode.QRCodeWriter
 
 class MainActivity : Activity() {
 
-    private val viewerUrl = "https://ekremdemir18-gif.github.io/evkamera/"
+    private val viewerUrl = BuildConfig.VIEWER_URL
+    private lateinit var cameraScreen: View
+    private lateinit var chooserScreen: View
+    private lateinit var modeBtn: Button
     private lateinit var statusText: TextView
     private lateinit var startBtn: Button
     private lateinit var switchBtn: Button
@@ -47,6 +50,14 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(24), dp(20), dp(24))
             setBackgroundColor(Color.parseColor("#111111"))
+        }
+
+        val prefs = getSharedPreferences("evk", MODE_PRIVATE)
+        val role = prefs.getString("role", null)
+        if (role == "viewer" && !CameraService.running) {
+            startActivity(Intent(this, ViewerActivity::class.java))
+            finish()
+            return
         }
 
         root.addView(text("EvKamera", 28f, Color.WHITE, bold = true))
@@ -70,7 +81,7 @@ class MainActivity : Activity() {
             .apply { setBackgroundColor(card); setTextColor(Color.WHITE) }
         root.addView(batteryBtn, lp(bottom = 20))
 
-        qrHint = text("İzleyici telefonda $viewerUrl adresini aç, \"İZLEYİCİ olsun → QR kod okut\" de ve bu kodu okut:", 14f, Color.parseColor("#9A9AA0"))
+        qrHint = text("İzleyici telefonda EvKamera uygulamasını aç → İZLEYİCİ → \"QR kod okut\" de ve bu kodu okut:", 14f, Color.parseColor("#9A9AA0"))
         root.addView(qrHint, lp(bottom = 12))
 
         qrView = ImageView(this).apply {
@@ -86,11 +97,58 @@ class MainActivity : Activity() {
             "• Bildirim çubuğunda sessiz bir \"EvKamera açık\" bildirimi durur, oradan durdurabilirsin.\n" +
             "• Telefonu şarja takılı bırak.", 14f, Color.parseColor("#9A9AA0")))
 
-        setContentView(ScrollView(this).apply { setBackgroundColor(Color.parseColor("#111111")); addView(root) })
+        modeBtn = button("↩  Mod değiştir (izleyici yap)") {
+            prefs.edit().remove("role").apply()
+            showChooser()
+        }.apply { setBackgroundColor(card); setTextColor(Color.WHITE) }
+        root.addView(modeBtn, lp(bottom = 0).apply { topMargin = dp(20) })
+
+        cameraScreen = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#111111")); addView(root) }
+        chooserScreen = buildChooser()
+        if (role == "camera" || CameraService.running) showCamera() else showChooser()
+    }
+
+    private fun buildChooser(): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(32), dp(20), dp(24))
+            setBackgroundColor(Color.parseColor("#111111"))
+        }
+        box.addView(text("EvKamera", 30f, Color.WHITE, bold = true))
+        box.addView(text("Bu telefon ne olarak kullanılacak?", 16f, Color.parseColor("#9A9AA0")).apply { setPadding(0, dp(4), 0, dp(24)) })
+        box.addView(bigChoice("📷", "KAMERA", "Evde kalacak telefon") {
+            getSharedPreferences("evk", MODE_PRIVATE).edit().putString("role", "camera").apply()
+            showCamera()
+        }, lp(bottom = 14))
+        box.addView(bigChoice("👁️", "İZLEYİCİ", "Yanında taşıdığın telefon") {
+            getSharedPreferences("evk", MODE_PRIVATE).edit().putString("role", "viewer").apply()
+            startActivity(Intent(this, ViewerActivity::class.java))
+            finish()
+        }, lp())
+        return ScrollView(this).apply { setBackgroundColor(Color.parseColor("#111111")); addView(box) }
+    }
+
+    private fun bigChoice(icon: String, title: String, sub: String, onClick: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(20), dp(24), dp(20), dp(24))
+        setBackgroundColor(card)
+        addView(text(icon, 34f, Color.WHITE).apply { setPadding(0, 0, dp(18), 0) })
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text(title, 20f, Color.WHITE, bold = true))
+            addView(text(sub, 14f, Color.parseColor("#9A9AA0")))
+        })
+        setOnClickListener { onClick() }
+    }
+
+    private fun showCamera() { setContentView(cameraScreen); render() }
+    private fun showChooser() { setContentView(chooserScreen) }
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::statusText.isInitialized) return
         CameraService.listener = { render() }
         render()
     }
@@ -101,7 +159,9 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        if (!::statusText.isInitialized) return
         val on = CameraService.running
+        modeBtn.visibility = if (on) View.GONE else View.VISIBLE
         statusText.text = (if (on) "🔴  " else "⚪  ") + CameraService.status
         startBtn.text = if (on) "■  Kamerayı durdur" else "▶  Kamerayı başlat"
         startBtn.setBackgroundColor(if (on) Color.parseColor("#3A3A3C") else accent)
