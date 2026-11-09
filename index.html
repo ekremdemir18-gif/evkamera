@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="theme-color" content="#111">
+<title>EvKamera</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root{--acc:#f7b54a;--bg:#111;--card:#1d1d1f;--txt:#f2f2f2;--mut:#9a9a9f;--red:#ff4d4d}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .screen{min-height:100%;display:flex;flex-direction:column;padding:20px;gap:16px}
+  .screen[hidden]{display:none}
+  h1{margin:8px 0 0;font-size:28px}
+  h1 span{color:var(--acc)}
+  p.sub{margin:0;color:var(--mut)}
+  .big{display:flex;align-items:center;gap:16px;padding:22px;border-radius:18px;background:var(--card);border:none;color:var(--txt);font-size:18px;text-align:left;width:100%}
+  .big .ico{font-size:34px}
+  .big small{display:block;color:var(--mut);font-size:14px;margin-top:4px}
+  button{font:inherit;cursor:pointer}
+  .btn{padding:14px 18px;border-radius:14px;border:none;background:var(--acc);color:#111;font-weight:600;font-size:16px}
+  .btn.sec{background:var(--card);color:var(--txt)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row .btn{flex:1}
+  .top{display:flex;align-items:center;gap:12px}
+  .back{background:none;border:none;color:var(--txt);font-size:26px;padding:4px 8px}
+  .status{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:15px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
+  .dot.live{background:var(--red);animation:p 1.4s infinite}
+  @keyframes p{50%{opacity:.35}}
+  video{width:100%;background:#000;border-radius:14px;object-fit:cover}
+  #camVideo{aspect-ratio:3/4;max-height:42vh}
+  .qrbox{background:#fff;padding:14px;border-radius:14px;align-self:center}
+  .link{font-size:12px;color:var(--mut);word-break:break-all;text-align:center}
+  .list{display:flex;flex-direction:column;gap:10px}
+  .cam-item{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:14px;padding:6px 6px 6px 16px}
+  .cam-item .name{flex:1;font-size:17px;padding:14px 0;background:none;border:none;color:var(--txt);text-align:left}
+  .cam-item .del{background:none;border:none;color:var(--mut);font-size:20px;padding:10px 14px}
+  input{width:100%;padding:14px;border-radius:14px;border:1px solid #333;background:#000;color:var(--txt);font-size:16px}
+  #watch{padding:0;gap:0;background:#000}
+  #watch .top{padding:14px 14px 10px}
+  #wVideo{border-radius:0;flex:1;min-height:0;height:100%;object-fit:contain}
+  .vwrap{flex:1;position:relative;display:flex}
+  .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mut);text-align:center;padding:30px;pointer-events:none}
+  .controls{display:flex;justify-content:space-around;padding:16px 10px 24px;background:#0b0b0b}
+  .ctl{display:flex;flex-direction:column;align-items:center;gap:6px;background:none;border:none;color:var(--txt);font-size:13px}
+  .ctl .c{width:64px;height:64px;border-radius:50%;background:#2a2a2c;display:flex;align-items:center;justify-content:center;font-size:26px}
+  .ctl.on .c{background:var(--acc)}
+  #dim{position:fixed;inset:0;background:#000;z-index:9;display:flex;align-items:flex-end;justify-content:center;padding:30px;color:#333;font-size:13px}
+  #dim[hidden]{display:none}
+  #scanVideo{aspect-ratio:1;max-height:60vh}
+  .note{font-size:13px;color:var(--mut);line-height:1.45}
+</style>
+</head>
+<body>
+
+<!-- ANA EKRAN -->
+<section class="screen" id="home">
+  <h1>Ev<span>Kamera</span></h1>
+  <p class="sub">Eski telefonunu güvenlik kamerasına çevir.</p>
+  <button class="big" id="goCam"><span class="ico">📷</span><div>Bu telefon KAMERA olsun<small>Evde kalacak telefon</small></div></button>
+  <button class="big" id="goView"><span class="ico">👁️</span><div>Bu telefon İZLEYİCİ olsun<small>Yanında taşıdığın telefon</small></div></button>
+  <p class="note">İki telefonda da bu sayfayı aç. Kamera telefonu bir QR kod gösterir, izleyici telefonla okutursun; eşleşme kaydedilir, sonra tek dokunuşla izlersin.</p>
+</section>
+
+<!-- KAMERA MODU -->
+<section class="screen" id="cam" hidden>
+  <div class="top"><button class="back" data-home>←</button><b style="flex:1">Kamera modu</b></div>
+  <div class="status"><span class="dot" id="camDot"></span><span id="camStatus">Hazırlanıyor…</span></div>
+  <video id="camVideo" autoplay playsinline muted></video>
+  <div class="row">
+    <button class="btn sec" id="flip">🔄 Kamerayı çevir</button>
+    <button class="btn sec" id="dimBtn">🌙 Ekranı karart</button>
+  </div>
+  <input id="camName" placeholder="Kamera adı (ör. Salon)">
+  <div class="qrbox" id="qr"></div>
+  <div class="link" id="camLink"></div>
+  <p class="note">İzleyici telefonla bu QR kodu okut. Bu sayfa açık ve ekran üstte kaldığı sürece yayın devam eder; telefonu şarja tak.</p>
+</section>
+
+<!-- İZLEYİCİ: KAMERA LİSTESİ -->
+<section class="screen" id="viewList" hidden>
+  <div class="top"><button class="back" data-home>←</button><b style="flex:1">Kameralarım</b></div>
+  <div class="list" id="camList"></div>
+  <button class="btn" id="goScan">➕ QR kod okut, kamera ekle</button>
+  <div class="row">
+    <input id="manualId" placeholder="veya kamera kodunu yapıştır">
+  </div>
+  <button class="btn sec" id="manualGo">Kodla bağlan</button>
+</section>
+
+<!-- QR OKUYUCU -->
+<section class="screen" id="scan" hidden>
+  <div class="top"><button class="back" id="scanBack">←</button><b style="flex:1">QR kodu okut</b></div>
+  <video id="scanVideo" autoplay playsinline muted></video>
+  <p class="note" id="scanMsg">Kamera telefonundaki QR kodu çerçeveye getir.</p>
+</section>
+
+<!-- CANLI İZLEME -->
+<section class="screen" id="watch" hidden>
+  <div class="top">
+    <button class="back" id="watchBack">←</button>
+    <b id="wName" style="flex:1">Kamera</b>
+    <div class="status"><span class="dot" id="wDot"></span><span id="wStatus">Bağlanıyor…</span></div>
+  </div>
+  <div class="vwrap">
+    <video id="wVideo" autoplay playsinline muted></video>
+    <div class="overlay" id="wOverlay">Bağlanıyor…</div>
+  </div>
+  <div class="controls">
+    <button class="ctl" id="soundBtn"><span class="c">🔇</span><span>Ses kapalı</span></button>
+    <button class="ctl" id="retryBtn"><span class="c">↻</span><span>Yenile</span></button>
+    <button class="ctl" id="fsBtn"><span class="c">⛶</span><span>Tam ekran</span></button>
+  </div>
+</section>
+
+<div id="dim" hidden>Ekrana dokun → geri dön · Yayın devam ediyor</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d){ try{ const v = JSON.parse(localStorage.getItem(k)); return v ?? d; }catch{ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} }
+};
+function show(id){ document.querySelectorAll('.screen').forEach(e => e.hidden = e.id !== id); }
+function rid(){ const a = new Uint8Array(10); crypto.getRandomValues(a); return 'evk-' + [...a].map(b => b.toString(16).padStart(2,'0')).join(''); }
+function parseId(t){ const m = String(t).match(/watch=(evk-[0-9a-f]+)/); if (m) return m[1]; t = String(t).trim(); return /^evk-[0-9a-f]+$/.test(t) ? t : null; }
+
+if (!window.isSecureContext) {
+  document.body.insertAdjacentHTML('afterbegin','<div style="background:#a33;padding:10px;text-align:center">Kamera için sayfa HTTPS üzerinden açılmalı.</div>');
+}
+
+/* ================= KAMERA MODU ================= */
+let camPeer, camStream, facing = 'environment', wakeLock;
+const calls = new Map();
+
+async function getStream(){
+  return navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: { echoCancellation: true, noiseSuppression: true }
+  });
+}
+function setCamStatus(msg){
+  if (msg){ $('#camStatus').textContent = msg; $('#camDot').classList.remove('live'); return; }
+  const n = calls.size;
+  $('#camStatus').textContent = n ? `Yayında • ${n} izleyici` : 'Hazır • izleyici bekleniyor';
+  $('#camDot').classList.toggle('live', n > 0);
+}
+async function startCamera(){
+  show('cam');
+  let id = store.get('camId'); if (!id){ id = rid(); store.set('camId', id); }
+  $('#camName').value = store.get('camName', '');
+  const url = location.origin + location.pathname + '#watch=' + id;
+  $('#camLink').textContent = url;
+  $('#qr').innerHTML = '';
+  if (window.QRCode) new QRCode($('#qr'), { text: url, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+  else $('#qr').innerHTML = '<div style="color:#111;padding:20px">QR kütüphanesi yüklenemedi (internet yok ya da sayfa önizlemede açıldı).</div>';
+  if (!window.isSecureContext || !navigator.mediaDevices){ setCamStatus('Kamera açılamıyor: sayfa HTTPS bir linkten açılmalı (dosya olarak değil).'); return; }
+  if (!window.Peer){ setCamStatus('Bağlantı kütüphanesi yüklenemedi. İnterneti kontrol edip sayfayı yenile.'); return; }
+  try { camStream = await getStream(); }
+  catch(e){ setCamStatus('Kamera/mikrofon izni verilmedi: ' + e.message); return; }
+  $('#camVideo').srcObject = camStream;
+  openCamPeer(id);
+  keepAwake();
+}
+function openCamPeer(id){
+  if (camPeer && !camPeer.destroyed) camPeer.destroy();
+  setCamStatus('Sunucuya bağlanıyor…');
+  camPeer = new Peer(id);
+  camPeer.on('open', () => setCamStatus());
+  camPeer.on('connection', conn => {
+    conn.on('data', d => {
+      if (!d || d.type !== 'watch' || !camStream) return;
+      conn.send({ type: 'info', name: store.get('camName', '') || 'Kameram' });
+      const old = calls.get(conn.peer); if (old) old.close();
+      const call = camPeer.call(conn.peer, camStream);
+      calls.set(conn.peer, call); setCamStatus();
+      const end = () => { if (calls.get(conn.peer) === call){ calls.delete(conn.peer); setCamStatus(); } };
+      call.on('close', end); call.on('error', end);
+    });
+    conn.on('close', () => { const c = calls.get(conn.peer); if (c) c.close(); calls.delete(conn.peer); setCamStatus(); });
+  });
+  camPeer.on('disconnected', () => {
+    setCamStatus('Bağlantı koptu, yeniden bağlanıyor…');
+    setTimeout(() => { if (camPeer && !camPeer.destroyed && camPeer.disconnected) camPeer.reconnect(); }, 2000);
+  });
+  camPeer.on('error', e => {
+    if (['unavailable-id','network','server-error','socket-error','socket-closed'].includes(e.type)){
+      setCamStatus(e.type === 'unavailable-id' ? 'Önceki oturum kapanıyor, bekleniyor…' : 'Sunucuya ulaşılamadı, tekrar deneniyor…');
+      camPeer.destroy(); setTimeout(() => { if (!$('#cam').hidden) openCamPeer(id); }, 5000);
+    } else console.warn('peer error', e);
+  });
+}
+function stopCamera(){
+  calls.forEach(c => c.close()); calls.clear();
+  if (camPeer) camPeer.destroy(); camPeer = null;
+  if (camStream) camStream.getTracks().forEach(t => t.stop()); camStream = null;
+  if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
+}
+async function flipCamera(){
+  if (!camStream) return;
+  facing = facing === 'environment' ? 'user' : 'environment';
+  let ns; try { ns = await getStream(); } catch(e){ facing = facing === 'environment' ? 'user' : 'environment'; return; }
+  calls.forEach(c => {
+    const pc = c.peerConnection; if (!pc) return;
+    pc.getSenders().forEach(s => { if (!s.track) return; const t = ns.getTracks().find(x => x.kind === s.track.kind); if (t) s.replaceTrack(t); });
+  });
+  camStream.getTracks().forEach(t => t.stop());
+  camStream = ns; $('#camVideo').srcObject = ns;
+}
+async function keepAwake(){
+  try { if ('wakeLock' in navigator && document.visibilityState === 'visible') wakeLock = await navigator.wakeLock.request('screen'); } catch{}
+}
+document.addEventListener('visibilitychange', () => { if (!$('#cam').hidden && document.visibilityState === 'visible') keepAwake(); });
+
+$('#goCam').onclick = () => { store.set('role','cam'); startCamera(); };
+$('#flip').onclick = flipCamera;
+$('#camName').onchange = e => store.set('camName', e.target.value.trim());
+$('#dimBtn').onclick = () => $('#dim').hidden = false;
+$('#dim').onclick = () => $('#dim').hidden = true;
+
+/* ================= İZLEYİCİ ================= */
+let vPeer, vConn, vCall, vTimer, currentCam;
+const cams = () => store.get('cams', []);
+function saveCam(id, name){
+  const l = cams(); const ex = l.find(c => c.id === id);
+  const n = name || (ex && ex.name) || 'Kamera ' + (l.length + 1);
+  store.set('cams', [{ id, name: n }, ...l.filter(c => c.id !== id)]);
+}
+function renderList(){
+  const box = $('#camList'); box.innerHTML = '';
+  const l = cams();
+  if (!l.length){ box.innerHTML = '<p class="note">Henüz eşleşmiş kamera yok. Aşağıdan QR kod okutarak ekle.</p>'; return; }
+  l.forEach(c => {
+    const d = document.createElement('div'); d.className = 'cam-item';
+    const b = document.createElement('button'); b.className = 'name'; b.textContent = '📹  ' + c.name; b.onclick = () => watch(c.id);
+    const x = document.createElement('button'); x.className = 'del'; x.textContent = '✕';
+    x.onclick = () => { store.set('cams', cams().filter(k => k.id !== c.id)); renderList(); };
+    d.append(b, x); box.append(d);
+  });
+}
+function openList(){ store.set('role','view'); renderList(); show('viewList'); }
+
+function wState(text, live){
+  $('#wStatus').textContent = text; $('#wDot').classList.toggle('live', !!live);
+  $('#wOverlay').textContent = live ? '' : text;
+}
+function setMuted(m){
+  const v = $('#wVideo'); v.muted = m;
+  if (!m) v.play().catch(()=>{});
+  $('#soundBtn').classList.toggle('on', !m);
+  $('#soundBtn').innerHTML = `<span class="c">${m ? '🔇' : '🔊'}</span><span>${m ? 'Ses kapalı' : 'Ses açık'}</span>`;
+}
+function ensureViewerPeer(){
+  if (vPeer && !vPeer.destroyed) return vPeer;
+  vPeer = new Peer();
+  vPeer.on('call', call => {
+    if (vCall) vCall.close();
+    vCall = call; call.answer();
+    call.on('stream', s => {
+      clearTimeout(vTimer);
+      const v = $('#wVideo'); v.srcObject = s; v.play().catch(()=>{});
+      wState('Canlı', true);
+    });
+    call.on('close', () => wState('Yayın kapandı', false));
+  });
+  vPeer.on('disconnected', () => { if (!vPeer.destroyed) vPeer.reconnect(); });
+  vPeer.on('error', e => {
+    clearTimeout(vTimer);
+    wState(e.type === 'peer-unavailable' ? 'Kamera çevrimdışı. Kamera telefonunda sayfa açık mı?' : 'Bağlantı hatası (' + e.type + ')', false);
+  });
+  return vPeer;
+}
+function closeWatch(){
+  clearTimeout(vTimer);
+  if (vCall) vCall.close(); vCall = null;
+  if (vConn) vConn.close(); vConn = null;
+  $('#wVideo').srcObject = null;
+}
+function watch(id){
+  closeWatch();
+  currentCam = id; show('watch'); setMuted(true);
+  $('#wName').textContent = (cams().find(c => c.id === id) || {}).name || 'Kamera';
+  wState('Bağlanıyor…', false);
+  const p = ensureViewerPeer();
+  const go = () => {
+    vConn = p.connect(id, { reliable: true });
+    vConn.on('open', () => vConn.send({ type: 'watch' }));
+    vConn.on('data', d => { if (d && d.type === 'info'){ $('#wName').textContent = d.name; saveCam(id, d.name); } });
+    vConn.on('close', () => { if (currentCam === id && !$('#watch').hidden) wState('Kamera bağlantısı kapandı', false); });
+    vTimer = setTimeout(() => { if (!$('#wVideo').srcObject) wState('Görüntü gelmedi. "Yenile"ye bas.', false); }, 20000);
+  };
+  p.open ? go() : p.once('open', go);
+}
+
+$('#goView').onclick = openList;
+$('#watchBack').onclick = () => { closeWatch(); currentCam = null; openList(); };
+$('#soundBtn').onclick = () => setMuted(!$('#wVideo').muted);
+$('#retryBtn').onclick = () => currentCam && watch(currentCam);
+$('#fsBtn').onclick = () => { const v = $('#wVideo'); (v.requestFullscreen || v.webkitEnterFullscreen || (()=>{})).call(v); };
+$('#manualGo').onclick = () => {
+  const id = parseId($('#manualId').value);
+  if (!id){ $('#manualId').value = ''; $('#manualId').placeholder = 'Geçersiz kod'; return; }
+  saveCam(id); watch(id);
+};
+
+/* ================= QR OKUYUCU ================= */
+let scanStream, scanning = false;
+async function startScan(){
+  show('scan'); $('#scanMsg').textContent = 'Kamera telefonundaki QR kodu çerçeveye getir.';
+  try { scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); }
+  catch(e){ $('#scanMsg').textContent = 'Kamera açılamadı: ' + e.message; return; }
+  const v = $('#scanVideo'); v.srcObject = scanStream; await v.play().catch(()=>{});
+  scanning = true;
+  const c = document.createElement('canvas'), ctx = c.getContext('2d', { willReadFrequently: true });
+  const tick = () => {
+    if (!scanning) return;
+    if (v.videoWidth){
+      const sc = Math.min(1, 640 / v.videoWidth);
+      c.width = v.videoWidth * sc; c.height = v.videoHeight * sc;
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      const r = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+      if (r){
+        const id = parseId(r.data);
+        if (id){ stopScan(); if (navigator.vibrate) navigator.vibrate(80); saveCam(id); watch(id); return; }
+        $('#scanMsg').textContent = 'Bu QR kod bir EvKamera kodu değil.';
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+function stopScan(){ scanning = false; if (scanStream) scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+$('#goScan').onclick = startScan;
+$('#scanBack').onclick = () => { stopScan(); openList(); };
+
+/* ================= GENEL ================= */
+document.querySelectorAll('[data-home]').forEach(b => b.onclick = () => { stopCamera(); show('home'); });
+
+// Telefonun kendi kamera uygulamasıyla QR okutulursa: sayfa #watch=... ile açılır
+const hashId = parseId(location.hash);
+if (hashId){
+  saveCam(hashId);
+  history.replaceState(null, '', location.pathname);
+  watch(hashId);
+} else if (store.get('role') === 'view' && cams().length) {
+  openList();
+} else {
+  show('home');
+}
+</script>
+</body>
+</html>
