@@ -144,7 +144,6 @@ class MainActivity : Activity() {
 
     private fun showCamera() { setContentView(cameraScreen); render() }
     private fun showChooser() { setContentView(chooserScreen) }
-    }
 
     override fun onResume() {
         super.onResume()
