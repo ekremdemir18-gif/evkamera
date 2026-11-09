@@ -11,7 +11,7 @@
 <style>
   :root{--acc:#f7b54a;--bg:#111;--card:#1d1d1f;--txt:#f2f2f2;--mut:#9a9a9f;--red:#ff4d4d}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  html,body{margin:0;height:100%;overscroll-behavior:none;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
   .screen{min-height:100%;display:flex;flex-direction:column;padding:20px;gap:16px}
   .screen[hidden]{display:none}
   h1{margin:8px 0 0;font-size:28px}
@@ -214,7 +214,25 @@ async function flipCamera(){
 async function keepAwake(){
   try { if ('wakeLock' in navigator && document.visibilityState === 'visible') wakeLock = await navigator.wakeLock.request('screen'); } catch{}
 }
-document.addEventListener('visibilitychange', () => { if (!$('#cam').hidden && document.visibilityState === 'visible') keepAwake(); });
+async function reviveCamera(){
+  if ($('#cam').hidden || document.visibilityState !== 'visible' || !camStream) return;
+  keepAwake();
+  // Arka planda Android kamerayı kapatabilir: kapandıysa yeniden aç, izleyicilere yeni görüntüyü ver
+  if (camStream.getTracks().some(t => t.readyState === 'ended')){
+    let ns; try { ns = await getStream(); } catch(e){ setCamStatus('Kamera yeniden açılamadı: ' + e.message); return; }
+    calls.forEach(c => {
+      const pc = c.peerConnection; if (!pc) return;
+      pc.getSenders().forEach(s => { const k = s.track ? s.track.kind : null; const t = k && ns.getTracks().find(x => x.kind === k); if (t) s.replaceTrack(t); });
+    });
+    camStream.getTracks().forEach(t => t.stop());
+    camStream = ns; $('#camVideo').srcObject = ns;
+  }
+  $('#camVideo').play().catch(()=>{});
+  if (camPeer && !camPeer.destroyed && camPeer.disconnected) camPeer.reconnect();
+}
+document.addEventListener('visibilitychange', reviveCamera);
+window.addEventListener('online', reviveCamera);
+setInterval(reviveCamera, 5000);
 
 $('#goCam').onclick = () => { store.set('role','cam'); startCamera(); };
 $('#flip').onclick = flipCamera;
@@ -223,7 +241,7 @@ $('#dimBtn').onclick = () => $('#dim').hidden = false;
 $('#dim').onclick = () => $('#dim').hidden = true;
 
 /* ================= İZLEYİCİ ================= */
-let vPeer, vConn, vCall, vTimer, currentCam;
+let vPeer, vConn, vCall, vTimer, currentCam, lastAttempt = 0;
 const cams = () => store.get('cams', []);
 function saveCam(id, name){
   const l = cams(); const ex = l.find(c => c.id === id);
@@ -265,7 +283,14 @@ function ensureViewerPeer(){
       const v = $('#wVideo'); v.srcObject = s; v.play().catch(()=>{});
       wState('Canlı', true);
     });
-    call.on('close', () => wState('Yayın kapandı', false));
+    call.on('close', () => { if (vCall === call){ wState('Yeniden bağlanıyor…', false); setTimeout(autoReconnect, 2000); } });
+    const pc = call.peerConnection;
+    if (pc) pc.addEventListener('connectionstatechange', () => {
+      if (vCall === call && ['failed','disconnected'].includes(pc.connectionState)){
+        wState('Bağlantı zayıf, yeniden bağlanıyor…', false);
+        setTimeout(() => { lastAttempt = 0; autoReconnect(); }, pc.connectionState === 'failed' ? 500 : 4000);
+      }
+    });
   });
   vPeer.on('disconnected', () => { if (!vPeer.destroyed) vPeer.reconnect(); });
   vPeer.on('error', e => {
@@ -282,6 +307,7 @@ function closeWatch(){
 }
 function watch(id){
   closeWatch();
+  lastAttempt = Date.now();
   currentCam = id; show('watch'); setMuted(true);
   $('#wName').textContent = (cams().find(c => c.id === id) || {}).name || 'Kamera';
   wState('Bağlanıyor…', false);
@@ -306,6 +332,32 @@ $('#manualGo').onclick = () => {
   if (!id){ $('#manualId').value = ''; $('#manualId').placeholder = 'Geçersiz kod'; return; }
   saveCam(id); watch(id);
 };
+
+/* İzleyici: arka plandan dönünce veya bağlantı kopunca kendiliğinden yeniden bağlan */
+function viewerHealthy(){
+  const s = $('#wVideo').srcObject;
+  if (!s || !s.getTracks().some(t => t.readyState === 'live')) return false;
+  const st = vCall && vCall.peerConnection && vCall.peerConnection.connectionState;
+  return !st || ['new','connecting','connected'].includes(st);
+}
+function autoReconnect(){
+  if ($('#watch').hidden || !currentCam || document.visibilityState !== 'visible') return;
+  const v = $('#wVideo');
+  if (v.srcObject && v.paused) v.play().catch(()=>{});
+  if (viewerHealthy()) return;
+  if (Date.now() - lastAttempt < 15000) return; // bağlanma sürüyor, bekle
+  const wasMuted = v.muted;
+  watch(currentCam);
+  if (!wasMuted) setMuted(false);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!$('#watch').hidden && !viewerHealthy()) lastAttempt = 0; // döndüğümüzde hemen dene
+  autoReconnect();
+});
+window.addEventListener('pageshow', autoReconnect);
+window.addEventListener('online', () => { lastAttempt = 0; autoReconnect(); });
+setInterval(autoReconnect, 5000);
 
 /* ================= QR OKUYUCU ================= */
 let scanStream, scanning = false;
