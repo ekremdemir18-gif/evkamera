@@ -77,7 +77,8 @@ class CameraService : Service() {
         }
     }
 
-    private class Conn(val peer: String, val id: String, val pc: PeerConnection) {
+    private class Conn(val peer: String, val id: String, val pc: PeerConnection, val isData: Boolean) {
+        var channel: DataChannel? = null
         var remoteSet = false
         val pending = ArrayList<IceCandidate>()
         var connected = false
@@ -178,7 +179,7 @@ class CameraService : Service() {
     }
 
     private fun refreshViewers() {
-        val n = conns.values.count { it.connected }
+        val n = conns.values.count { it.connected && !it.isData }
         if (n != viewers) {
             viewers = n
             updateNotification()
@@ -286,20 +287,21 @@ class CameraService : Service() {
             "OPEN" -> refreshViewers()
             "ID-TAKEN" -> lostSignaling("Önceki oturum kapanıyor, bekleniyor…", 10)
             "ERROR" -> lostSignaling("Sunucu hatası, tekrar deneniyor…", 10)
-            "OFFER" -> if (payload != null && payload.optString("type") == "media") handleOffer(src, payload)
-            "CANDIDATE" -> if (payload != null) {
-                if (payload.optString("type") == "evk") handleCommand(src, payload) else handleCandidate(payload)
+            "OFFER" -> if (payload != null) when (payload.optString("type")) {
+                "media" -> handleOffer(src, payload, false)
+                "data" -> handleOffer(src, payload, true)   // komut kanalı (ön/arka kamera vb.)
             }
+            "CANDIDATE" -> if (payload != null) handleCandidate(payload)
             "LEAVE", "EXPIRE" -> conns.values.filter { it.peer == src }.forEach { closeConn(it) }
         }
     }
 
-    private fun handleOffer(src: String, payload: JSONObject) {
+    private fun handleOffer(src: String, payload: JSONObject, isData: Boolean) {
         val f = factory ?: return
         val connId = payload.optString("connectionId")
         val sdp = payload.optJSONObject("sdp")?.optString("sdp") ?: return
         // Aynı izleyiciden gelen eski bağlantıları kapat
-        conns.values.filter { it.peer == src }.forEach { closeConn(it) }
+        conns.values.filter { it.peer == src && it.isData == isData }.forEach { closeConn(it) }
 
         val cfg = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -314,7 +316,7 @@ class CameraService : Service() {
                         .put("sdpMid", c.sdpMid)
                         .put("sdpMLineIndex", c.sdpMLineIndex)
                     send(JSONObject().put("type", "CANDIDATE").put("dst", src).put("payload",
-                        JSONObject().put("candidate", cand).put("type", "media").put("connectionId", connId)))
+                        JSONObject().put("candidate", cand).put("type", if (isData) "data" else "media").put("connectionId", connId)))
                 }
             }
 
@@ -343,12 +345,27 @@ class CameraService : Service() {
             override fun onIceCandidatesRemoved(c: Array<out IceCandidate>) {}
             override fun onAddStream(s: MediaStream) {}
             override fun onRemoveStream(s: MediaStream) {}
-            override fun onDataChannel(d: DataChannel) {}
+            override fun onDataChannel(d: DataChannel) {
+                exec.execute {
+                    val c = conn ?: return@execute
+                    c.channel = d
+                    d.registerObserver(object : DataChannel.Observer {
+                        override fun onBufferedAmountChange(previousAmount: Long) {}
+                        override fun onStateChange() {}
+                        override fun onMessage(buffer: DataChannel.Buffer) {
+                            val b = ByteArray(buffer.data.remaining())
+                            buffer.data.get(b)
+                            val text = String(b, Charsets.UTF_8)
+                            exec.execute { handleCommand(c, text) }
+                        }
+                    })
+                }
+            }
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(r: RtpReceiver, s: Array<out MediaStream>) {}
         }) ?: return
 
-        val c = Conn(src, connId, pc)
+        val c = Conn(src, connId, pc, isData)
         conn = c
         conns[connId] = c
 
@@ -359,8 +376,10 @@ class CameraService : Service() {
                     c.remoteSet = true
                     c.pending.forEach { pc.addIceCandidate(it) }
                     c.pending.clear()
-                    videoTrack?.let { pc.addTrack(it, listOf("evk")) }
-                    audioTrack?.let { pc.addTrack(it, listOf("evk")) }
+                    if (!isData) {
+                        videoTrack?.let { pc.addTrack(it, listOf("evk")) }
+                        audioTrack?.let { pc.addTrack(it, listOf("evk")) }
+                    }
                     pc.createAnswer(object : Sdp() {
                         override fun onCreateSuccess(answer: SessionDescription) {
                             exec.execute {
@@ -370,7 +389,7 @@ class CameraService : Service() {
                                             send(JSONObject().put("type", "ANSWER").put("dst", src).put("payload",
                                                 JSONObject()
                                                     .put("sdp", JSONObject().put("type", "answer").put("sdp", answer.description))
-                                                    .put("type", "media")
+                                                    .put("type", if (isData) "data" else "media")
                                                     .put("connectionId", connId)
                                                     .put("browser", "android")))
                                         }
@@ -384,20 +403,28 @@ class CameraService : Service() {
         }, SessionDescription(SessionDescription.Type.OFFER, sdp))
     }
 
-    /** İzleyiciden gelen komutlar: ön/arka kamera değiştirme */
-    private fun handleCommand(src: String, payload: JSONObject) {
-        when (payload.optString("cmd")) {
-            "switch" -> switchCamera(src)
+    /** İzleyiciden veri kanalıyla gelen komutlar */
+    private fun handleCommand(c: Conn, text: String) {
+        val m = try { JSONObject(text) } catch (e: Exception) { return }
+        when (m.optString("cmd")) {
+            "switch" -> switchCamera(c)
         }
     }
 
-    private fun switchCamera(replyTo: String?) {
+    private fun sendData(c: Conn, obj: JSONObject) {
+        val ch = c.channel ?: return
+        if (ch.state() != DataChannel.State.OPEN) return
+        val bytes = obj.toString().toByteArray(Charsets.UTF_8)
+        // PeerJS "json" kanalı metni UTF-8 bayt olarak bekler
+        ch.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
+    }
+
+    private fun switchCamera(replyTo: Conn?) {
         val cap = capturer ?: return
         cap.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
             override fun onCameraSwitchDone(isFront: Boolean) {
                 exec.execute {
-                    if (replyTo != null) send(JSONObject().put("type", "CANDIDATE").put("dst", replyTo)
-                        .put("payload", JSONObject().put("type", "evk").put("cmd", "state").put("front", isFront)))
+                    if (replyTo != null) sendData(replyTo, JSONObject().put("cmd", "state").put("front", isFront))
                 }
             }
             override fun onCameraSwitchError(error: String?) {

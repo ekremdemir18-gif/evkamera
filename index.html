@@ -173,10 +173,11 @@ function openCamPeer(id){
   setCamStatus('Sunucuya bağlanıyor…');
   camPeer = new Peer(id);
   camPeer.on('open', () => setCamStatus());
-  // İzleyiciden gelen komutlar (sinyal sunucusu üzerinden): ön/arka kamera
-  camPeer.socket.on('message', m => {
-    if (m && m.type === 'CANDIDATE' && m.payload && m.payload.type === 'evk' && m.payload.cmd === 'switch')
-      flipCamera().then(() => sendCmd(camPeer, m.src, { cmd: 'state', front: facing === 'user' }));
+  // İzleyiciden gelen komutlar (doğrudan veri kanalı): ön/arka kamera
+  camPeer.on('connection', conn => {
+    conn.on('data', d => {
+      if (d && d.cmd === 'switch') flipCamera().then(() => { try { conn.send({ cmd: 'state', front: facing === 'user' }); } catch {} });
+    });
   });
   // İzleyici bu kamerayı arar; kamera görüntü+sesle cevap verir (Android uygulaması da aynı şekilde çalışır)
   camPeer.on('call', call => {
@@ -283,12 +284,6 @@ function setMuted(m){
 function ensureViewerPeer(){
   if (vPeer && !vPeer.destroyed) return vPeer;
   vPeer = new Peer();
-  vPeer.socket.on('message', m => {
-    if (m && m.type === 'CANDIDATE' && m.payload && m.payload.type === 'evk' && m.payload.cmd === 'state' && m.src === currentCam){
-      $('#flipBtn').classList.remove('on'); $('#flipBtn').disabled = false;
-      wState(m.payload.front ? 'Canlı • ön kamera' : 'Canlı • arka kamera', true);
-    }
-  });
   vPeer.on('disconnected', () => { if (!vPeer.destroyed) vPeer.reconnect(); });
   vPeer.on('error', e => {
     clearTimeout(vTimer);
@@ -296,9 +291,23 @@ function ensureViewerPeer(){
   });
   return vPeer;
 }
-// Kameraya küçük komutlar gönder (sinyal sunucusu bunları olduğu gibi iletir)
-function sendCmd(peer, dst, data){
-  try { peer.socket.send({ type: 'CANDIDATE', dst, payload: Object.assign({ type: 'evk' }, data) }); } catch (e) { console.warn(e); }
+// Kameraya komut göndermek için ayrı, doğrudan veri kanalı
+let vData = null;
+function openControl(id){
+  const p = vPeer; if (!p || !p.open) return;
+  if (vData && vData.peer === id && (vData.open || Date.now() - vData._t < 10000)) return;
+  try { if (vData) vData.close(); } catch {}
+  const d = p.connect(id, { serialization: 'json', reliable: true });
+  if (!d) return;
+  d._t = Date.now(); vData = d;
+  d.on('data', m => {
+    if (m && m.cmd === 'state' && currentCam === id){
+      $('#flipBtn').classList.remove('on'); $('#flipBtn').disabled = false;
+      wState(m.front ? 'Canlı • ön kamera' : 'Canlı • arka kamera', true);
+    }
+  });
+  d.on('close', () => { if (vData === d) vData = null; });
+  d.on('error', () => { if (vData === d) vData = null; });
 }
 let _dummy;
 function dummyStream(){
@@ -313,6 +322,7 @@ function closeWatch(){
   clearTimeout(vTimer);
   if (vCall) vCall.close(); vCall = null;
   if (vConn) vConn.close(); vConn = null;
+  try { if (vData) vData.close(); } catch {} vData = null;
   $('#wVideo').srcObject = null;
 }
 function watch(id){
@@ -332,6 +342,7 @@ function watch(id){
       clearTimeout(vTimer);
       const v = $('#wVideo'); if (v.srcObject !== s){ v.srcObject = s; } v.play().catch(()=>{});
       wState('Canlı', true);
+      openControl(id);
     });
     call.on('close', () => { if (vCall === call){ wState('Yeniden bağlanıyor…', false); setTimeout(autoReconnect, 2000); } });
     const pc = call.peerConnection;
@@ -351,11 +362,12 @@ $('#watchBack').onclick = () => { closeWatch(); currentCam = null; openList(); }
 $('#soundBtn').onclick = () => setMuted(!$('#wVideo').muted);
 $('#retryBtn').onclick = () => currentCam && watch(currentCam);
 $('#flipBtn').onclick = () => {
-  if (!currentCam || !vPeer || !vPeer.open) return;
-  sendCmd(vPeer, currentCam, { cmd: 'switch' });
+  if (!currentCam) return;
+  if (!vData || !vData.open){ openControl(currentCam); wState('Komut kanalı bağlanıyor, tekrar dene…', viewerHealthy()); return; }
+  vData.send({ cmd: 'switch' });
   const b = $('#flipBtn'); b.classList.add('on'); b.disabled = true;
   wState('Kamera değiştiriliyor…', true);
-  setTimeout(() => { b.classList.remove('on'); b.disabled = false; if (viewerHealthy()) wState('Canlı', true); }, 2500);
+  setTimeout(() => { b.classList.remove('on'); b.disabled = false; }, 4000);
 };
 $('#fsBtn').onclick = () => { const v = $('#wVideo'); (v.requestFullscreen || v.webkitEnterFullscreen || (()=>{})).call(v); };
 $('#manualGo').onclick = () => {
