@@ -29,13 +29,18 @@ jobs:
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: APK'yı adlandır
-        run: cp android/app/build/outputs/apk/release/app-release.apk evkamera.apk
+        run: |
+          ls android/app/build/outputs/apk/release/
+          cp android/app/build/outputs/apk/release/app-arm64-v8a-release.apk evkamera.apk
+          cp android/app/build/outputs/apk/release/app-armeabi-v7a-release.apk evkamera-eski-telefon.apk
 
       - name: İndirme sayfasına koy
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.1.${{ github.run_number }}
           name: EvKamera 0.1.${{ github.run_number }}
-          body: "Kamera telefonuna kurulacak Android uygulaması. İndir: evkamera.apk"
-          files: evkamera.apk
+          body: "Kamera telefonuna kurulacak Android uygulaması. Önce evkamera.apk dosyasını dene; kurulmazsa (çok eski telefon) evkamera-eski-telefon.apk dosyasını kur."
+          files: |
+            evkamera.apk
+            evkamera-eski-telefon.apk
           make_latest: true
