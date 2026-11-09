@@ -114,7 +114,7 @@ class CameraService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
-            ACTION_SWITCH -> { exec.execute { capturer?.switchCamera(null) }; return START_STICKY }
+            ACTION_SWITCH -> { exec.execute { switchCamera(null) }; return START_STICKY }
         }
         if (running) return START_STICKY
         running = true
@@ -287,7 +287,9 @@ class CameraService : Service() {
             "ID-TAKEN" -> lostSignaling("Önceki oturum kapanıyor, bekleniyor…", 10)
             "ERROR" -> lostSignaling("Sunucu hatası, tekrar deneniyor…", 10)
             "OFFER" -> if (payload != null && payload.optString("type") == "media") handleOffer(src, payload)
-            "CANDIDATE" -> if (payload != null) handleCandidate(payload)
+            "CANDIDATE" -> if (payload != null) {
+                if (payload.optString("type") == "evk") handleCommand(src, payload) else handleCandidate(payload)
+            }
             "LEAVE", "EXPIRE" -> conns.values.filter { it.peer == src }.forEach { closeConn(it) }
         }
     }
@@ -380,6 +382,28 @@ class CameraService : Service() {
                 }
             }
         }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    }
+
+    /** İzleyiciden gelen komutlar: ön/arka kamera değiştirme */
+    private fun handleCommand(src: String, payload: JSONObject) {
+        when (payload.optString("cmd")) {
+            "switch" -> switchCamera(src)
+        }
+    }
+
+    private fun switchCamera(replyTo: String?) {
+        val cap = capturer ?: return
+        cap.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFront: Boolean) {
+                exec.execute {
+                    if (replyTo != null) send(JSONObject().put("type", "CANDIDATE").put("dst", replyTo)
+                        .put("payload", JSONObject().put("type", "evk").put("cmd", "state").put("front", isFront)))
+                }
+            }
+            override fun onCameraSwitchError(error: String?) {
+                Log.w(TAG, "kamera değiştirilemedi: $error")
+            }
+        })
     }
 
     private fun handleCandidate(payload: JSONObject) {

@@ -113,6 +113,7 @@
   </div>
   <div class="controls">
     <button class="ctl" id="soundBtn"><span class="c">🔇</span><span>Ses kapalı</span></button>
+    <button class="ctl" id="flipBtn"><span class="c">🔄</span><span>Kamera çevir</span></button>
     <button class="ctl" id="retryBtn"><span class="c">↻</span><span>Yenile</span></button>
     <button class="ctl" id="fsBtn"><span class="c">⛶</span><span>Tam ekran</span></button>
   </div>
@@ -172,6 +173,11 @@ function openCamPeer(id){
   setCamStatus('Sunucuya bağlanıyor…');
   camPeer = new Peer(id);
   camPeer.on('open', () => setCamStatus());
+  // İzleyiciden gelen komutlar (sinyal sunucusu üzerinden): ön/arka kamera
+  camPeer.socket.on('message', m => {
+    if (m && m.type === 'CANDIDATE' && m.payload && m.payload.type === 'evk' && m.payload.cmd === 'switch')
+      flipCamera().then(() => sendCmd(camPeer, m.src, { cmd: 'state', front: facing === 'user' }));
+  });
   // İzleyici bu kamerayı arar; kamera görüntü+sesle cevap verir (Android uygulaması da aynı şekilde çalışır)
   camPeer.on('call', call => {
     if (!camStream) return call.close();
@@ -277,12 +283,22 @@ function setMuted(m){
 function ensureViewerPeer(){
   if (vPeer && !vPeer.destroyed) return vPeer;
   vPeer = new Peer();
+  vPeer.socket.on('message', m => {
+    if (m && m.type === 'CANDIDATE' && m.payload && m.payload.type === 'evk' && m.payload.cmd === 'state' && m.src === currentCam){
+      $('#flipBtn').classList.remove('on'); $('#flipBtn').disabled = false;
+      wState(m.payload.front ? 'Canlı • ön kamera' : 'Canlı • arka kamera', true);
+    }
+  });
   vPeer.on('disconnected', () => { if (!vPeer.destroyed) vPeer.reconnect(); });
   vPeer.on('error', e => {
     clearTimeout(vTimer);
     wState(e.type === 'peer-unavailable' ? 'Kamera çevrimdışı. Kamera telefonunda uygulama/sayfa açık mı?' : 'Bağlantı hatası (' + e.type + ')', false);
   });
   return vPeer;
+}
+// Kameraya küçük komutlar gönder (sinyal sunucusu bunları olduğu gibi iletir)
+function sendCmd(peer, dst, data){
+  try { peer.socket.send({ type: 'CANDIDATE', dst, payload: Object.assign({ type: 'evk' }, data) }); } catch (e) { console.warn(e); }
 }
 let _dummy;
 function dummyStream(){
@@ -334,6 +350,13 @@ $('#goView').onclick = openList;
 $('#watchBack').onclick = () => { closeWatch(); currentCam = null; openList(); };
 $('#soundBtn').onclick = () => setMuted(!$('#wVideo').muted);
 $('#retryBtn').onclick = () => currentCam && watch(currentCam);
+$('#flipBtn').onclick = () => {
+  if (!currentCam || !vPeer || !vPeer.open) return;
+  sendCmd(vPeer, currentCam, { cmd: 'switch' });
+  const b = $('#flipBtn'); b.classList.add('on'); b.disabled = true;
+  wState('Kamera değiştiriliyor…', true);
+  setTimeout(() => { b.classList.remove('on'); b.disabled = false; if (viewerHealthy()) wState('Canlı', true); }, 2500);
+};
 $('#fsBtn').onclick = () => { const v = $('#wVideo'); (v.requestFullscreen || v.webkitEnterFullscreen || (()=>{})).call(v); };
 $('#manualGo').onclick = () => {
   const id = parseId($('#manualId').value);
