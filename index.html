@@ -171,17 +171,16 @@ function openCamPeer(id){
   setCamStatus('Sunucuya bağlanıyor…');
   camPeer = new Peer(id);
   camPeer.on('open', () => setCamStatus());
-  camPeer.on('connection', conn => {
-    conn.on('data', d => {
-      if (!d || d.type !== 'watch' || !camStream) return;
-      conn.send({ type: 'info', name: store.get('camName', '') || 'Kameram' });
-      const old = calls.get(conn.peer); if (old) old.close();
-      const call = camPeer.call(conn.peer, camStream);
-      calls.set(conn.peer, call); setCamStatus();
-      const end = () => { if (calls.get(conn.peer) === call){ calls.delete(conn.peer); setCamStatus(); } };
-      call.on('close', end); call.on('error', end);
-    });
-    conn.on('close', () => { const c = calls.get(conn.peer); if (c) c.close(); calls.delete(conn.peer); setCamStatus(); });
+  // İzleyici bu kamerayı arar; kamera görüntü+sesle cevap verir (Android uygulaması da aynı şekilde çalışır)
+  camPeer.on('call', call => {
+    if (!camStream) return call.close();
+    const old = calls.get(call.peer); if (old) old.close();
+    call.answer(camStream);
+    calls.set(call.peer, call); setCamStatus();
+    const end = () => { if (calls.get(call.peer) === call){ calls.delete(call.peer); setCamStatus(); } };
+    call.on('close', end); call.on('error', end);
+    const pc = call.peerConnection;
+    if (pc) pc.addEventListener('connectionstatechange', () => { if (['failed','closed'].includes(pc.connectionState)) end(); });
   });
   camPeer.on('disconnected', () => {
     setCamStatus('Bağlantı koptu, yeniden bağlanıyor…');
@@ -255,9 +254,11 @@ function renderList(){
   l.forEach(c => {
     const d = document.createElement('div'); d.className = 'cam-item';
     const b = document.createElement('button'); b.className = 'name'; b.textContent = '📹  ' + c.name; b.onclick = () => watch(c.id);
+    const r = document.createElement('button'); r.className = 'del'; r.textContent = '✎';
+    r.onclick = () => { const n = window.prompt('Kamera adı', c.name); if (n && n.trim()){ saveCam(c.id, n.trim()); renderList(); } };
     const x = document.createElement('button'); x.className = 'del'; x.textContent = '✕';
-    x.onclick = () => { store.set('cams', cams().filter(k => k.id !== c.id)); renderList(); };
-    d.append(b, x); box.append(d);
+    x.onclick = () => { if (!window.confirm(c.name + ' silinsin mi?')) return; store.set('cams', cams().filter(k => k.id !== c.id)); renderList(); };
+    d.append(b, r, x); box.append(d);
   });
 }
 function openList(){ store.set('role','view'); renderList(); show('viewList'); }
@@ -275,29 +276,21 @@ function setMuted(m){
 function ensureViewerPeer(){
   if (vPeer && !vPeer.destroyed) return vPeer;
   vPeer = new Peer();
-  vPeer.on('call', call => {
-    if (vCall) vCall.close();
-    vCall = call; call.answer();
-    call.on('stream', s => {
-      clearTimeout(vTimer);
-      const v = $('#wVideo'); v.srcObject = s; v.play().catch(()=>{});
-      wState('Canlı', true);
-    });
-    call.on('close', () => { if (vCall === call){ wState('Yeniden bağlanıyor…', false); setTimeout(autoReconnect, 2000); } });
-    const pc = call.peerConnection;
-    if (pc) pc.addEventListener('connectionstatechange', () => {
-      if (vCall === call && ['failed','disconnected'].includes(pc.connectionState)){
-        wState('Bağlantı zayıf, yeniden bağlanıyor…', false);
-        setTimeout(() => { lastAttempt = 0; autoReconnect(); }, pc.connectionState === 'failed' ? 500 : 4000);
-      }
-    });
-  });
   vPeer.on('disconnected', () => { if (!vPeer.destroyed) vPeer.reconnect(); });
   vPeer.on('error', e => {
     clearTimeout(vTimer);
-    wState(e.type === 'peer-unavailable' ? 'Kamera çevrimdışı. Kamera telefonunda sayfa açık mı?' : 'Bağlantı hatası (' + e.type + ')', false);
+    wState(e.type === 'peer-unavailable' ? 'Kamera çevrimdışı. Kamera telefonunda uygulama/sayfa açık mı?' : 'Bağlantı hatası (' + e.type + ')', false);
   });
   return vPeer;
+}
+let _dummy;
+function dummyStream(){
+  // Sessiz ses + 2x2 boş görüntü: bağlantıda ses ve görüntü kanallarının açılması için (ileride "Konuş" için mikrofonla değişecek)
+  if (_dummy && _dummy.getTracks().every(t => t.readyState === 'live')) return _dummy;
+  const tracks = [];
+  try { const ac = new (window.AudioContext || window.webkitAudioContext)(); const dst = ac.createMediaStreamDestination(); tracks.push(...dst.stream.getAudioTracks()); } catch {}
+  try { const c = document.createElement('canvas'); c.width = c.height = 2; c.getContext('2d').fillRect(0,0,2,2); tracks.push(...c.captureStream(1).getVideoTracks()); } catch {}
+  return _dummy = new MediaStream(tracks);
 }
 function closeWatch(){
   clearTimeout(vTimer);
@@ -313,10 +306,24 @@ function watch(id){
   wState('Bağlanıyor…', false);
   const p = ensureViewerPeer();
   const go = () => {
-    vConn = p.connect(id, { reliable: true });
-    vConn.on('open', () => vConn.send({ type: 'watch' }));
-    vConn.on('data', d => { if (d && d.type === 'info'){ $('#wName').textContent = d.name; saveCam(id, d.name); } });
-    vConn.on('close', () => { if (currentCam === id && !$('#watch').hidden) wState('Kamera bağlantısı kapandı', false); });
+    // İzleyici kamerayı arar. Kamera (web sayfası ya da Android uygulaması) görüntü ve sesle cevap verir.
+    const call = p.call(id, dummyStream(), { constraints: { offerToReceiveAudio: true, offerToReceiveVideo: true } });
+    if (!call){ wState('Bağlantı kurulamadı', false); return; }
+    vCall = call;
+    call.on('stream', s => {
+      if (vCall !== call) return;
+      clearTimeout(vTimer);
+      const v = $('#wVideo'); if (v.srcObject !== s){ v.srcObject = s; } v.play().catch(()=>{});
+      wState('Canlı', true);
+    });
+    call.on('close', () => { if (vCall === call){ wState('Yeniden bağlanıyor…', false); setTimeout(autoReconnect, 2000); } });
+    const pc = call.peerConnection;
+    if (pc) pc.addEventListener('connectionstatechange', () => {
+      if (vCall === call && ['failed','disconnected'].includes(pc.connectionState)){
+        wState('Bağlantı zayıf, yeniden bağlanıyor…', false);
+        setTimeout(() => { lastAttempt = 0; autoReconnect(); }, pc.connectionState === 'failed' ? 500 : 4000);
+      }
+    });
     vTimer = setTimeout(() => { if (!$('#wVideo').srcObject) wState('Görüntü gelmedi. "Yenile"ye bas.', false); }, 20000);
   };
   p.open ? go() : p.once('open', go);
